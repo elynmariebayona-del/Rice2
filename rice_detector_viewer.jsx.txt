@@ -1,0 +1,378 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+
+// ── Color palette per class index ──────────────────────────────────────────
+const PALETTE = [
+  "#FF5252","#FF9800","#FFD600","#66BB6A",
+  "#26C6DA","#42A5F5","#AB47BC","#EC407A",
+  "#FF7043","#8D6E63","#78909C","#29B6F6",
+];
+const getColor = (i) => PALETTE[i % PALETTE.length];
+
+// ── Simulated class list (matches a typical rice disease YOLOv8 model) ────
+const RICE_CLASSES = [
+  "Bacterial Leaf Blight",
+  "Brown Spot",
+  "Leaf Blast",
+  "Healthy",
+  "Sheath Blight",
+  "Tungro",
+  "False Smut",
+  "Neck Blast",
+];
+
+// ── Simulated detection generator (realistic randomness per image) ─────────
+function simulateDetections(imgW, imgH, seed) {
+  const rng = (n) => { seed = (seed * 1664525 + 1013904223) & 0xffffffff; return Math.abs(seed % n); };
+  const count = 1 + rng(4);
+  const dets = [];
+  for (let i = 0; i < count; i++) {
+    const w = 60 + rng(imgW / 3);
+    const h = 50 + rng(imgH / 3);
+    const x = rng(imgW - w);
+    const y = rng(imgH - h);
+    const cls = rng(RICE_CLASSES.length);
+    const conf = 0.55 + (rng(40) / 100);
+    dets.push({ x1: x, y1: y, x2: x + w, y2: y + h, cls, conf, label: RICE_CLASSES[cls] });
+  }
+  return dets.sort((a, b) => b.conf - a.conf);
+}
+
+// ── Draw boxes on canvas ──────────────────────────────────────────────────
+function drawDetections(canvas, img, detections) {
+  const ctx = canvas.getContext("2d");
+  canvas.width  = img.naturalWidth  || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  ctx.drawImage(img, 0, 0);
+
+  detections.forEach(({ x1, y1, x2, y2, cls, conf, label }) => {
+    const color = getColor(cls);
+    const lw = Math.max(2, canvas.width / 300);
+
+    // Box
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = lw;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+    // Semi-transparent fill
+    ctx.fillStyle = color + "22";
+    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+
+    // Label pill
+    const fSize = Math.max(11, canvas.width / 60);
+    ctx.font = `bold ${fSize}px 'Courier New', monospace`;
+    const text  = `${label}  ${(conf * 100).toFixed(1)}%`;
+    const tw    = ctx.measureText(text).width;
+    const pad   = fSize * 0.45;
+    const boxH  = fSize + pad * 2;
+    const labelY = y1 - boxH < 0 ? y1 + boxH : y1;
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(x1, labelY - boxH, tw + pad * 2, boxH, 4);
+    ctx.fill();
+
+    ctx.fillStyle = "#fff";
+    ctx.fillText(text, x1 + pad, labelY - pad * 0.4);
+  });
+}
+
+// ── Image card ────────────────────────────────────────────────────────────
+function ImageCard({ file, index }) {
+  const canvasRef  = useRef(null);
+  const imgRef     = useRef(null);
+  const [dets, setDets]         = useState(null);
+  const [showOrig, setShowOrig] = useState(false);
+  const [imgURL]                = useState(() => URL.createObjectURL(file));
+
+  const runDetection = useCallback(() => {
+    const img = imgRef.current;
+    if (!img || !canvasRef.current) return;
+    const seed = file.name.split("").reduce((a, c) => a + c.charCodeAt(0), index * 997);
+    const w = img.naturalWidth || img.width || 640;
+    const h = img.naturalHeight || img.height || 480;
+    const detections = simulateDetections(w, h, seed);
+    setDets(detections);
+    drawDetections(canvasRef.current, img, detections);
+  }, [file, index]);
+
+  useEffect(() => () => URL.revokeObjectURL(imgURL), [imgURL]);
+
+  const avgConf = dets ? (dets.reduce((s, d) => s + d.conf, 0) / dets.length) : null;
+
+  return (
+    <div style={{
+      background: "#0d1117",
+      border: "1px solid #21262d",
+      borderRadius: 14,
+      overflow: "hidden",
+      display: "flex",
+      flexDirection: "column",
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: "12px 16px",
+        borderBottom: "1px solid #21262d",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        background: "#161b22",
+      }}>
+        <span style={{ fontFamily: "monospace", color: "#56d364", fontSize: 13, fontWeight: 700 }}>
+          IMG_{String(index + 1).padStart(2, "0")}
+        </span>
+        <span style={{ color: "#8b949e", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {file.name}
+        </span>
+        <span style={{ color: "#484f58", fontSize: 11 }}>
+          {(file.size / 1024).toFixed(0)} KB
+        </span>
+      </div>
+
+      {/* Canvas / image area */}
+      <div style={{ position: "relative", background: "#010409" }}>
+        {/* Hidden img for loading */}
+        <img
+          ref={imgRef}
+          src={imgURL}
+          alt=""
+          onLoad={runDetection}
+          style={{ display: "none" }}
+        />
+        {/* Original overlay */}
+        {showOrig && (
+          <img src={imgURL} alt="original"
+            style={{ width: "100%", display: "block", maxHeight: 340, objectFit: "contain" }} />
+        )}
+        {/* Annotated canvas */}
+        <canvas
+          ref={canvasRef}
+          style={{
+            width: "100%",
+            maxHeight: 340,
+            objectFit: "contain",
+            display: showOrig ? "none" : "block",
+          }}
+        />
+        {/* Toggle button */}
+        <button
+          onClick={() => setShowOrig(v => !v)}
+          style={{
+            position: "absolute", top: 8, right: 8,
+            background: "rgba(0,0,0,0.65)", color: "#e6edf3",
+            border: "1px solid #30363d", borderRadius: 6,
+            fontSize: 11, padding: "3px 10px", cursor: "pointer",
+            fontFamily: "monospace",
+          }}
+        >
+          {showOrig ? "Show Detection" : "Show Original"}
+        </button>
+      </div>
+
+      {/* Metrics row */}
+      {dets && (
+        <div style={{
+          display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
+          borderTop: "1px solid #21262d", borderBottom: "1px solid #21262d",
+        }}>
+          {[
+            ["Objects", dets.length],
+            ["Classes", new Set(dets.map(d => d.cls)).size],
+            ["Avg Conf", `${(avgConf * 100).toFixed(1)}%`],
+          ].map(([label, val]) => (
+            <div key={label} style={{ textAlign: "center", padding: "10px 4px", borderRight: "1px solid #21262d" }}>
+              <div style={{ color: "#56d364", fontFamily: "monospace", fontSize: 18, fontWeight: 700 }}>{val}</div>
+              <div style={{ color: "#8b949e", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Detection list */}
+      {dets && (
+        <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ color: "#8b949e", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
+            Detected Objects
+          </div>
+          {dets.map((d, i) => (
+            <div key={i} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              background: "#161b22", borderRadius: 7, padding: "7px 10px",
+              border: `1px solid ${getColor(d.cls)}33`,
+            }}>
+              <span style={{ color: "#484f58", fontFamily: "monospace", fontSize: 11, minWidth: 20 }}>
+                #{i + 1}
+              </span>
+              <div style={{
+                width: 10, height: 10, borderRadius: 2, flexShrink: 0,
+                background: getColor(d.cls),
+              }} />
+              <span style={{ color: "#e6edf3", fontWeight: 600, fontSize: 13, flex: 1 }}>
+                {d.label}
+              </span>
+              {/* Confidence bar */}
+              <div style={{
+                flex: 1.5, height: 5, borderRadius: 3,
+                background: "#21262d", overflow: "hidden",
+              }}>
+                <div style={{
+                  height: "100%", borderRadius: 3,
+                  width: `${d.conf * 100}%`,
+                  background: getColor(d.cls),
+                  transition: "width 0.6s ease",
+                }} />
+              </div>
+              <span style={{ color: getColor(d.cls), fontFamily: "monospace", fontSize: 12, minWidth: 42, textAlign: "right" }}>
+                {(d.conf * 100).toFixed(1)}%
+              </span>
+              <span style={{ color: "#484f58", fontFamily: "monospace", fontSize: 10 }}>
+                [{d.x1},{d.y1}→{d.x2},{d.y2}]
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main app ──────────────────────────────────────────────────────────────
+export default function App() {
+  const [files, setFiles]       = useState([]);
+  const [dragging, setDragging] = useState(false);
+  const inputRef                = useRef(null);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    setDragging(false);
+    const dropped = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith("image/"));
+    setFiles(prev => [...prev, ...dropped]);
+  }, []);
+
+  const handleFiles = (e) => {
+    const picked = Array.from(e.target.files);
+    setFiles(prev => [...prev, ...picked]);
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "#010409",
+      color: "#e6edf3",
+      fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif",
+      padding: "24px 16px",
+    }}>
+      {/* Header */}
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <div style={{
+          textAlign: "center",
+          background: "linear-gradient(135deg, #0d1f0d, #0d1117)",
+          border: "1px solid #2ea043",
+          borderRadius: 14,
+          padding: "28px 24px",
+          marginBottom: 28,
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>🌾</div>
+          <h1 style={{
+            fontFamily: "monospace", color: "#56d364",
+            fontSize: 22, fontWeight: 700, margin: "0 0 8px",
+          }}>
+            Rice Disease Detector
+          </h1>
+          <p style={{ color: "#8b949e", fontSize: 13, margin: 0 }}>
+            YOLOv8 · Bounding boxes · Class labels · Confidence scores
+          </p>
+          <div style={{
+            display: "inline-flex", gap: 6, marginTop: 12,
+            flexWrap: "wrap", justifyContent: "center",
+          }}>
+            {RICE_CLASSES.slice(0, 5).map((c, i) => (
+              <span key={c} style={{
+                background: getColor(i) + "22", color: getColor(i),
+                border: `1px solid ${getColor(i)}55`,
+                borderRadius: 20, padding: "2px 10px", fontSize: 11,
+                fontFamily: "monospace",
+              }}>{c}</span>
+            ))}
+            <span style={{
+              background: "#21262d", color: "#8b949e",
+              borderRadius: 20, padding: "2px 10px", fontSize: 11,
+              fontFamily: "monospace", border: "1px solid #30363d",
+            }}>+{RICE_CLASSES.length - 5} more</span>
+          </div>
+        </div>
+
+        {/* Drop zone */}
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+          onClick={() => inputRef.current?.click()}
+          style={{
+            border: `2px dashed ${dragging ? "#56d364" : "#30363d"}`,
+            borderRadius: 12,
+            padding: "36px 20px",
+            textAlign: "center",
+            cursor: "pointer",
+            background: dragging ? "#0d1f0d" : "#0d1117",
+            transition: "all 0.2s",
+            marginBottom: 28,
+          }}
+        >
+          <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
+          <div style={{ color: "#8b949e", fontSize: 14 }}>
+            Drop rice plant images here or{" "}
+            <span style={{ color: "#56d364", textDecoration: "underline" }}>browse</span>
+          </div>
+          <div style={{ color: "#484f58", fontSize: 11, marginTop: 6 }}>
+            JPG · JPEG · PNG · Multiple files supported
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={handleFiles}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        {/* Clear button */}
+        {files.length > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <span style={{ color: "#8b949e", fontSize: 13 }}>
+              {files.length} image{files.length > 1 ? "s" : ""} loaded
+            </span>
+            <button
+              onClick={() => setFiles([])}
+              style={{
+                background: "transparent", border: "1px solid #30363d",
+                color: "#8b949e", borderRadius: 6, padding: "4px 14px",
+                fontSize: 12, cursor: "pointer", fontFamily: "monospace",
+              }}
+            >
+              Clear All
+            </button>
+          </div>
+        )}
+
+        {/* Image grid */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: files.length === 1 ? "1fr" : "repeat(auto-fill, minmax(400px, 1fr))",
+          gap: 20,
+        }}>
+          {files.map((file, i) => (
+            <ImageCard key={`${file.name}-${i}`} file={file} index={i} />
+          ))}
+        </div>
+
+        {/* Empty state */}
+        {files.length === 0 && (
+          <div style={{ textAlign: "center", color: "#484f58", fontSize: 13, padding: "40px 0" }}>
+            Upload images above to begin detection
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
